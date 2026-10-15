@@ -1,24 +1,34 @@
 {
-  "name": "task-gnome",
-  "version": "1.0.0",
-  "description": "",
+  "name": "taskgnome",
+  "description": "Planifie des prompts opencode depuis GNOME",
   "scripts": {
     "typecheck": "tsc",
+    "lint": "oxlint --type-aware",
+    "check": "tsc && oxlint --type-aware",
     "start": "bin/taskgnome daemon"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@clack/prompts": "^1.8.1",
+    "@stricli/core": "^1.3.0",
     "croner": "^10.0.1",
-    "dbus-next": "^0.10.2"
+    "dbus-next": "^0.10.2",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
+    "oxlint": "^1.88.0",
+    "oxlint-tsgolint": "^7.0.2004",
     "typescript": "^7.0.2"
   },
   "bin": {
     "taskgnome": "bin/taskgnome"
-  }
+  },
+  "packageManager": "pnpm@12.9.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "private": true,
+  "version": "0.1.0",
+  "repository": "github:maarekj/task-gnome"
 }

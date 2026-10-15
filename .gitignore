@@ -6,3 +6,4 @@ devenv.local.nix
 *.log
 .env
 .env.*
+.idea/
