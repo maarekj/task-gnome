@@ -8,16 +8,24 @@ export const EXTENSION_UUID = 'taskgnome@maarek';
 export const OPEN_REQUEST = path.join(DATA_DIR, 'open-request.json');
 
 /** Opens the extension preferences window directly on a run. */
-export function openRun(runId: number): Promise<void> {
+export async function openRun(runId: number): Promise<void> {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(OPEN_REQUEST, JSON.stringify({ run: runId, ts: Date.now() }));
-  return new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     execFile(
       'gdbus',
-      ['call', '--session', '--dest', 'org.gnome.Shell', '--object-path', '/org/gnome/Shell',
-        '--method', 'org.gnome.Shell.Extensions.OpenExtensionPrefs', '--', `'${EXTENSION_UUID}'`, "''", '@a{sv} {}'],
+      [
+        'call', '--session', '--dest', 'org.gnome.Shell', '--object-path', '/org/gnome/Shell',
+        '--method', 'org.gnome.Shell.Extensions.OpenExtensionPrefs', '--', `'${EXTENSION_UUID}'`, "''", '@a{sv} {}',
+      ],
       { timeout: 5000 },
-      (err) => (err ? reject(new Error(`Impossible d'ouvrir les préférences: ${err.message.split('\n')[0]}`)) : resolve()),
+      (error) => {
+        if (error === null) {
+          resolve();
+          return;
+        }
+        reject(new Error(`Impossible d'ouvrir les préférences: ${error.message.split('\n')[0] ?? ''}`, { cause: error }));
+      },
     );
   });
 }

@@ -4,16 +4,16 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import type { z } from 'zod';
 import type { Task } from './db.ts';
+import { env } from './env.ts';
+import { Health, ServerEvent } from './opencode.ts';
 import { DATA_DIR } from './paths.ts';
+import { errorMessage, sleep } from './util.ts';
 
 const READY_TIMEOUT_MS = 180_000; // direnv/devenv can be slow the first time
-export const IDLE_STOP_MS = Number(process.env.TASKGNOME_SERVER_IDLE_MS ?? 15 * 60_000);
-
-export interface OcEvent {
-  type: string;
-  properties: any;
-}
+const SSE_CONNECT_TIMEOUT_MS = 10_000;
+export const IDLE_STOP_MS = Number(env('TASKGNOME_SERVER_IDLE_MS') ?? 15 * 60_000);
 
 export interface OcServer {
   key: string;
@@ -26,15 +26,17 @@ export interface OcServer {
 }
 
 export interface PoolHooks {
-  onEvent(srv: OcServer, ev: OcEvent): void;
-  onStderr(srv: OcServer, line: string): void;
-  onExit(srv: OcServer): void;
+  onEvent: (srv: OcServer, ev: ServerEvent) => void;
+  onStderr: (srv: OcServer, line: string) => void;
+  onExit: (srv: OcServer) => void;
 }
 
-const log = (...a: unknown[]) => console.log(new Date().toISOString(), ...a);
+const log = (...a: unknown[]): void => {
+  console.log(new Date().toISOString(), ...a);
+};
 
 function serverKey(t: Pick<Task, 'dir' | 'direnv' | 'env'>): string {
-  return crypto.createHash('sha1').update(JSON.stringify([t.dir, !!t.direnv, t.env || '{}'])).digest('hex').slice(0, 12);
+  return crypto.createHash('sha1').update(JSON.stringify([t.dir, t.direnv, t.env])).digest('hex').slice(0, 12);
 }
 
 function freePort(): Promise<number> {
@@ -42,18 +44,22 @@ function freePort(): Promise<number> {
     const s = net.createServer();
     s.once('error', reject);
     s.listen(0, '127.0.0.1', () => {
-      const port = (s.address() as net.AddressInfo).port;
-      s.close(() => resolve(port));
+      const addr = s.address();
+      s.close(() => {
+        if (addr !== null && typeof addr === 'object') resolve(addr.port);
+        else reject(new Error('port introuvable'));
+      });
     });
   });
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const authHeader = (srv: OcServer): string => `Basic ${Buffer.from(`opencode:${srv.password}`).toString('base64')}`;
 
 export class ServerPool {
-  private servers = new Map<string, Promise<OcServer>>();
-  private live = new Map<string, OcServer>();
-  private hooks: PoolHooks;
+  private readonly servers = new Map<string, Promise<OcServer>>();
+  private readonly live = new Map<string, OcServer>();
+  private readonly hooks: PoolHooks;
+
   constructor(hooks: PoolHooks) {
     this.hooks = hooks;
   }
@@ -62,10 +68,12 @@ export class ServerPool {
   get(task: Task): Promise<OcServer> {
     const key = serverKey(task);
     let p = this.servers.get(key);
-    if (!p) {
+    if (p === undefined) {
       p = this.start(key, task);
       this.servers.set(key, p);
-      p.catch(() => this.servers.delete(key));
+      p.catch(() => {
+        this.servers.delete(key);
+      });
     }
     return p;
   }
@@ -74,21 +82,24 @@ export class ServerPool {
     return [...this.live.values()];
   }
 
-  async api<T = any>(srv: OcServer, method: string, p: string, body?: unknown, timeoutMs = 30_000): Promise<T> {
+  /** Calls the opencode HTTP API. With a schema, the JSON response is validated and returned. */
+  async api(srv: OcServer, method: string, p: string, body?: unknown): Promise<void>;
+  async api<T>(srv: OcServer, method: string, p: string, body: unknown, schema: z.ZodType<T>, timeoutMs?: number): Promise<T>;
+  async api<T>(srv: OcServer, method: string, p: string, body?: unknown, schema?: z.ZodType<T>, timeoutMs = 30_000): Promise<T | undefined> {
     const url = `${srv.url}${p}${p.includes('?') ? '&' : '?'}directory=${encodeURIComponent(srv.dir)}`;
-    const res = await fetch(url, {
-      method,
-      headers: {
-        authorization: 'Basic ' + Buffer.from(`opencode:${srv.password}`).toString('base64'),
-        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
-      },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+    const headers: Record<string, string> = { authorization: authHeader(srv) };
+    const init: RequestInit = { method, headers, signal: AbortSignal.timeout(timeoutMs) };
+    if (body !== undefined) {
+      headers['content-type'] = 'application/json';
+      init.body = JSON.stringify(body);
+    }
+    const res = await fetch(url, init);
     const text = await res.text();
     if (!res.ok) throw new Error(`opencode ${method} ${p}: HTTP ${res.status} ${text.slice(0, 300)}`);
     srv.lastActivity = Date.now();
-    return (text ? JSON.parse(text) : undefined) as T;
+    if (schema === undefined) return undefined;
+    const raw: unknown = JSON.parse(text);
+    return schema.parse(raw);
   }
 
   private async start(key: string, task: Task): Promise<OcServer> {
@@ -96,12 +107,6 @@ export class ServerPool {
     const password = crypto.randomBytes(18).toString('base64url');
     const args = ['serve', '--port', String(port), '--hostname', '127.0.0.1', '--print-logs', '--log-level', 'ERROR'];
     const [cmd, argv] = task.direnv ? ['direnv', ['exec', task.dir, 'opencode', ...args]] : ['opencode', args];
-    let extraEnv: Record<string, string> = {};
-    try {
-      extraEnv = JSON.parse(task.env || '{}');
-    } catch {
-      /* ignore */
-    }
     const logDir = path.join(DATA_DIR, 'servers');
     fs.mkdirSync(logDir, { recursive: true });
     const logFile = path.join(logDir, `${key}.log`);
@@ -110,37 +115,42 @@ export class ServerPool {
 
     const proc = spawn(cmd, argv, {
       cwd: task.dir,
-      detached: true,
+      detached: true, // own process group, killed as a whole
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ...extraEnv, OPENCODE_SERVER_PASSWORD: password },
+      env: { ...process.env, ...task.env, OPENCODE_SERVER_PASSWORD: password },
     });
     const srv: OcServer = { key, dir: task.dir, url: `http://127.0.0.1:${port}`, password, proc, lastActivity: Date.now(), logFile };
 
     let stderrTail = '';
     let buf = '';
-    proc.stdout!.on('data', (c: Buffer) => logStream.write(c));
-    proc.stderr!.on('data', (c: Buffer) => {
+    proc.stdout.on('data', (c: Buffer) => {
+      logStream.write(c);
+    });
+    proc.stderr.on('data', (c: Buffer) => {
       logStream.write(c);
       const s = c.toString('utf8');
       stderrTail = (stderrTail + s).slice(-4000);
       buf += s;
-      let nl: number;
-      while ((nl = buf.indexOf('\n')) >= 0) {
+      let nl = buf.indexOf('\n');
+      while (nl >= 0) {
         const line = buf.slice(0, nl);
         buf = buf.slice(nl + 1);
         if (this.live.has(key)) this.hooks.onStderr(srv, line);
+        nl = buf.indexOf('\n');
       }
     });
 
-    let exited = false;
-    let spawnError: Error | null = null;
-    proc.on('error', (e) => (spawnError = e));
+    // mutated by the process callbacks below
+    const state: { exited: boolean; spawnError: Error | null } = { exited: false, spawnError: null };
+    proc.on('error', (error) => {
+      state.spawnError = error;
+    });
     proc.on('exit', (code, sig) => {
-      exited = true;
-      logStream.end(`=== exit code=${code} signal=${sig}\n`);
+      state.exited = true;
+      logStream.end(`=== exit code=${String(code)} signal=${String(sig)}\n`);
       this.servers.delete(key);
       if (this.live.delete(key)) {
-        log(`serveur ${key} arrêté (code=${code} signal=${sig})`);
+        log(`serveur ${key} arrêté (code=${String(code)} signal=${String(sig)})`);
         this.hooks.onExit(srv);
       }
     });
@@ -148,9 +158,11 @@ export class ServerPool {
     // wait until the HTTP API answers
     const deadline = Date.now() + READY_TIMEOUT_MS;
     for (;;) {
-      if (spawnError) throw new Error(`Impossible de lancer ${cmd}: ${(spawnError as Error).message}`);
-      if (exited) {
-        const hint = /is blocked|direnv allow/.test(stderrTail) ? `direnv: le .envrc de ${task.dir} n'est pas autorisé. Lance \`direnv allow\` dans ce dossier.\n` : '';
+      if (state.spawnError !== null) throw new Error(`Impossible de lancer ${cmd}: ${state.spawnError.message}`, { cause: state.spawnError });
+      if (state.exited) {
+        const hint = /is blocked|direnv allow/u.test(stderrTail)
+          ? `direnv: le .envrc de ${task.dir} n'est pas autorisé. Lance \`direnv allow\` dans ce dossier.\n`
+          : '';
         throw new Error(`${hint}Le serveur opencode s'est arrêté au démarrage:\n${stderrTail.trim().split('\n').slice(-6).join('\n')}`);
       }
       if (Date.now() > deadline) {
@@ -158,9 +170,11 @@ export class ServerPool {
         throw new Error(`Le serveur opencode n'a pas démarré en ${READY_TIMEOUT_MS / 1000}s`);
       }
       try {
-        await this.api(srv, 'GET', '/global/health', undefined, 2000);
+        // oxlint-disable-next-line no-await-in-loop -- sequential polling is the point
+        await this.api(srv, 'GET', '/global/health', undefined, Health, 2000);
         break;
       } catch {
+        // oxlint-disable-next-line no-await-in-loop -- sequential polling is the point
         await sleep(300);
       }
     }
@@ -171,69 +185,79 @@ export class ServerPool {
   }
 
   /** Follows /event (SSE). Resolves once connected; reconnects while the server lives. */
-  private subscribe(srv: OcServer): Promise<void> {
-    return new Promise((resolveConnected) => {
-      let connected = false;
-      const loop = async () => {
-        while (this.live.get(srv.key) === srv) {
-          try {
-            const ctl = new AbortController();
-            const connectTimer = setTimeout(() => ctl.abort(), 10_000);
-            const res = await fetch(`${srv.url}/event?directory=${encodeURIComponent(srv.dir)}`, {
-              signal: ctl.signal,
-              headers: { authorization: 'Basic ' + Buffer.from(`opencode:${srv.password}`).toString('base64'), accept: 'text/event-stream' },
-            });
-            if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
-            const reader = res.body.getReader();
-            const dec = new TextDecoder();
-            let buf = '';
-            for (;;) {
-              const { value, done } = await reader.read();
-              clearTimeout(connectTimer);
-              if (done) break;
-              buf += dec.decode(value, { stream: true });
-              let nl: number;
-              while ((nl = buf.indexOf('\n')) >= 0) {
-                const line = buf.slice(0, nl).trimEnd();
-                buf = buf.slice(nl + 1);
-                if (!line.startsWith('data:')) continue;
-                let ev: OcEvent;
-                try {
-                  ev = JSON.parse(line.slice(5));
-                } catch {
-                  continue;
-                }
-                if (ev.type === 'server.connected' && !connected) {
-                  connected = true;
-                  resolveConnected();
-                }
-                if (ev.type !== 'server.heartbeat') this.hooks.onEvent(srv, ev);
-              }
-            }
-          } catch {
-            /* reconnect below */
-          }
-          if (!connected) {
-            connected = true; // don't block forever, events will flow after reconnect
-            resolveConnected();
-          }
-          await sleep(1000);
+  private async subscribe(srv: OcServer): Promise<void> {
+    const { promise: ready, resolve: markConnected } = Promise.withResolvers<void>();
+
+    const readStream = async (): Promise<void> => {
+      const ctl = new AbortController();
+      const connectTimer = setTimeout(() => {
+        ctl.abort();
+      }, SSE_CONNECT_TIMEOUT_MS);
+      const res = await fetch(`${srv.url}/event?directory=${encodeURIComponent(srv.dir)}`, {
+        signal: ctl.signal,
+        headers: { authorization: authHeader(srv), accept: 'text/event-stream' },
+      });
+      if (!res.ok || res.body === null) throw new Error(`HTTP ${res.status}`);
+      const reader: ReadableStreamDefaultReader<Uint8Array> = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        // oxlint-disable-next-line no-await-in-loop -- reading a stream
+        const { value, done } = await reader.read();
+        clearTimeout(connectTimer); // first chunk received: no timeout anymore (long-lived stream)
+        if (done) return;
+        buf += dec.decode(value, { stream: true });
+        let nl = buf.indexOf('\n');
+        while (nl >= 0) {
+          this.onSseLine(srv, buf.slice(0, nl).trimEnd(), () => {
+            markConnected();
+          });
+          buf = buf.slice(nl + 1);
+          nl = buf.indexOf('\n');
         }
-      };
-      void loop();
-    });
+      }
+    };
+
+    const loop = async (): Promise<void> => {
+      while (this.live.get(srv.key) === srv) {
+        try {
+          // oxlint-disable-next-line no-await-in-loop -- reconnect loop
+          await readStream();
+        } catch (error) {
+          log(`flux d'événements ${srv.key} interrompu: ${errorMessage(error)}`);
+        }
+        markConnected(); // don't block forever, events will flow after reconnect
+        // oxlint-disable-next-line no-await-in-loop -- reconnect loop
+        await sleep(1000);
+      }
+    };
+    void loop();
+    await ready;
+  }
+
+  private onSseLine(srv: OcServer, line: string, markConnected: () => void): void {
+    if (!line.startsWith('data:')) return;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(line.slice(5));
+    } catch {
+      return;
+    }
+    if (typeof raw === 'object' && raw !== null && 'type' in raw && raw.type === 'server.connected') markConnected();
+    const ev = ServerEvent.safeParse(raw);
+    if (ev.success) this.hooks.onEvent(srv, ev.data);
   }
 
   /** Number of `opencode attach <url>` clients currently connected to this server. */
   attachedClients(srv: OcServer): number {
     let n = 0;
     for (const pid of fs.readdirSync('/proc')) {
-      if (!/^\d+$/.test(pid)) continue;
+      if (!/^\d+$/u.test(pid)) continue;
       try {
         const cmd = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0');
-        if (cmd.includes('attach') && cmd.includes(srv.url)) n++;
+        if (cmd.includes('attach') && cmd.includes(srv.url)) n += 1;
       } catch {
-        /* process gone */
+        // process gone
       }
     }
     return n;
@@ -242,32 +266,29 @@ export class ServerPool {
   /** Stops servers that are idle, have no busy session and no attached terminal. */
   reapIdle(isBusy: (srv: OcServer) => boolean): void {
     for (const srv of this.live.values()) {
-      if (isBusy(srv)) {
+      if (isBusy(srv) || this.attachedClients(srv) > 0) {
         srv.lastActivity = Date.now();
         continue;
       }
       if (Date.now() - srv.lastActivity < IDLE_STOP_MS) continue;
-      if (this.attachedClients(srv) > 0) {
-        srv.lastActivity = Date.now();
-        continue;
-      }
-      log(`serveur ${srv.key} inactif depuis ${Math.round(IDLE_STOP_MS / 60000)} min, arrêt`);
+      log(`serveur ${srv.key} inactif depuis ${Math.round(IDLE_STOP_MS / 60_000)} min, arrêt`);
       this.kill(srv);
     }
   }
 
   kill(srv: OcServer): void {
-    try {
-      process.kill(-srv.proc.pid!, 'SIGTERM');
-    } catch {
-      /* gone */
-    }
-    setTimeout(() => {
+    const { pid } = srv.proc;
+    if (pid === undefined) return;
+    const signal = (sig: NodeJS.Signals): void => {
       try {
-        process.kill(-srv.proc.pid!, 'SIGKILL');
+        process.kill(-pid, sig);
       } catch {
-        /* gone */
+        // already gone
       }
+    };
+    signal('SIGTERM');
+    setTimeout(() => {
+      signal('SIGKILL');
     }, 5000).unref();
   }
 

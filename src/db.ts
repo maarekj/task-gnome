@@ -1,57 +1,84 @@
 import fs from 'node:fs';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
+import { z } from 'zod';
 import { DB_PATH, ensureDirs, runLogPaths } from './paths.ts';
+import { errorMessage } from './util.ts';
 
-export interface Task {
-  id: number;
-  name: string;
-  cron: string;
-  dir: string;
-  prompt: string;
-  model: string | null;
-  agent: string | null;
-  timeout_sec: number;
-  enabled: number;
-  catch_up: number;
-  /** JSON object of extra environment variables */
-  env: string;
-  /** 1 = run opencode through `direnv exec <dir>` */
-  direnv: number;
-  last_fire_at: string | null;
-  created_at: string;
-  updated_at: string;
+// ---------------------------------------------------------------- schemas
+
+const sqlBool = z.number().int().transform((n) => n !== 0);
+const envJson = z.string().transform((s, ctx): Record<string, string> => {
+  const parsed = z.record(z.string(), z.string()).safeParse(safeJson(s));
+  if (parsed.success) return parsed.data;
+  ctx.addIssue({ code: 'custom', message: `env invalide: ${s}` });
+  return z.NEVER;
+});
+
+function safeJson(s: string): unknown {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
 }
 
-export type RunStatus = 'running' | 'success' | 'error' | 'auth_error' | 'timeout' | 'cancelled';
-export type RunTrigger = 'schedule' | 'catchup' | 'manual' | 'interactive';
+const TaskRow = z.object({
+  id: z.number().int(),
+  name: z.string(),
+  cron: z.string(),
+  dir: z.string(),
+  prompt: z.string(),
+  model: z.string().nullable(),
+  agent: z.string().nullable(),
+  timeout_sec: z.number().int(),
+  enabled: sqlBool,
+  catch_up: sqlBool,
+  /** extra environment variables */
+  env: envJson,
+  /** run opencode through `direnv exec <dir>` */
+  direnv: sqlBool,
+  last_fire_at: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type Task = z.output<typeof TaskRow>;
 
-export interface Run {
-  id: number;
-  task_id: number;
-  task_name: string;
-  trigger: RunTrigger;
-  status: RunStatus;
-  started_at: string;
-  finished_at: string | null;
-  exit_code: number | null;
-  session_id: string | null;
-  error: string | null;
-  output: string | null;
-  cost: number | null;
-  tokens: number | null;
-  pid: number | null;
-  prompt: string | null;
-}
+export const RUN_STATUSES = ['running', 'success', 'error', 'auth_error', 'timeout', 'cancelled'] as const;
+export const RunStatus = z.enum(RUN_STATUSES);
+export type RunStatus = z.output<typeof RunStatus>;
+export const RunTrigger = z.enum(['schedule', 'catchup', 'manual', 'interactive']);
+export type RunTrigger = z.output<typeof RunTrigger>;
+
+const RunRow = z.object({
+  id: z.number().int(),
+  task_id: z.number().int(),
+  task_name: z.string(),
+  trigger: RunTrigger,
+  status: RunStatus,
+  started_at: z.string(),
+  finished_at: z.string().nullable(),
+  exit_code: z.number().int().nullable(),
+  session_id: z.string().nullable(),
+  error: z.string().nullable(),
+  output: z.string().nullable(),
+  cost: z.number().nullable(),
+  tokens: z.number().int().nullable(),
+  pid: z.number().int().nullable(),
+  prompt: z.string().nullable(),
+});
+export type Run = z.output<typeof RunRow>;
+
+const ColumnRow = z.object({ name: z.string() });
+const IdRow = z.object({ id: z.number().int() });
+const TaskIdRow = z.object({ task_id: z.number().int() });
+
+// ---------------------------------------------------------------- connection
 
 let db: DatabaseSync | undefined;
 
-export function getDb(): DatabaseSync {
-  if (db) return db;
-  ensureDirs();
-  db = new DatabaseSync(DB_PATH, { timeout: 10_000 }); // wait for locks held by other taskgnome processes
-  db.exec(`
+function migrate(d: DatabaseSync): void {
+  d.exec(`
     PRAGMA journal_mode = WAL;
-    PRAGMA busy_timeout = 5000;
     PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS tasks (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,42 +113,80 @@ export function getDb(): DatabaseSync {
     );
     CREATE INDEX IF NOT EXISTS runs_task ON runs(task_id, id DESC);
   `);
-  const cols = db.prepare('PRAGMA table_info(runs)').all().map((c) => (c as { name: string }).name);
-  const tcols = db.prepare('PRAGMA table_info(tasks)').all().map((c) => (c as { name: string }).name);
+  const columns = (table: string): Set<string> =>
+    new Set(d.prepare(`PRAGMA table_info(${table})`).all().map((c) => ColumnRow.parse(c).name));
   // tolerate a concurrent process applying the same migration
-  const migrate = (sql: string) => {
+  const alter = (sql: string): void => {
     try {
-      db!.exec(sql);
-    } catch (e) {
-      if (!/duplicate column/i.test((e as Error).message)) throw e;
+      d.exec(sql);
+    } catch (error) {
+      if (!/duplicate column/iu.test(errorMessage(error))) throw error;
     }
   };
-  if (!cols.includes('prompt')) migrate('ALTER TABLE runs ADD COLUMN prompt TEXT');
-  if (!tcols.includes('env')) migrate(`ALTER TABLE tasks ADD COLUMN env TEXT NOT NULL DEFAULT '{}'`);
-  if (!tcols.includes('direnv')) migrate('ALTER TABLE tasks ADD COLUMN direnv INTEGER NOT NULL DEFAULT 0');
-  return db;
+  const runCols = columns('runs');
+  const taskCols = columns('tasks');
+  if (!runCols.has('prompt')) alter('ALTER TABLE runs ADD COLUMN prompt TEXT');
+  if (!taskCols.has('env')) alter(`ALTER TABLE tasks ADD COLUMN env TEXT NOT NULL DEFAULT '{}'`);
+  if (!taskCols.has('direnv')) alter('ALTER TABLE tasks ADD COLUMN direnv INTEGER NOT NULL DEFAULT 0');
 }
 
-const now = () => new Date().toISOString();
-const rows = <T>(r: unknown[]): T[] => r.map((x) => ({ ...(x as object) }) as T);
+export function getDb(): DatabaseSync {
+  if (db !== undefined) return db;
+  ensureDirs();
+  // wait for locks held by other taskgnome processes (daemon, CLI, extension)
+  const d = new DatabaseSync(DB_PATH, { timeout: 10_000 });
+  migrate(d);
+  db = d;
+  return d;
+}
 
-// ---------- tasks ----------
+const now = (): string => new Date().toISOString();
+const toTask = (row: unknown): Task => TaskRow.parse(row);
+const toRun = (row: unknown): Run => RunRow.parse(row);
+
+// ---------------------------------------------------------------- tasks
 
 export function listTasks(): Task[] {
-  return rows<Task>(getDb().prepare('SELECT * FROM tasks ORDER BY id').all());
+  return getDb().prepare('SELECT * FROM tasks ORDER BY id').all().map((r) => toTask(r));
 }
 
 /** Find a task by numeric id or by name. */
 export function findTask(ref: string | number): Task | undefined {
   const d = getDb();
-  const r =
-    typeof ref === 'number' || /^\d+$/.test(ref)
+  const row =
+    typeof ref === 'number' || /^\d+$/u.test(ref)
       ? d.prepare('SELECT * FROM tasks WHERE id = ?').get(Number(ref))
       : d.prepare('SELECT * FROM tasks WHERE name = ?').get(ref);
-  return r ? ({ ...r } as unknown as Task) : undefined;
+  return row === undefined ? undefined : toTask(row);
 }
 
-export type TaskInput = Pick<Task, 'name' | 'cron' | 'dir' | 'prompt' | 'model' | 'agent' | 'timeout_sec' | 'enabled' | 'catch_up' | 'env' | 'direnv'>;
+function getTask(id: number): Task {
+  const t = findTask(id);
+  if (t === undefined) throw new Error(`Tâche #${id} introuvable`);
+  return t;
+}
+
+export interface TaskInput {
+  name: string;
+  cron: string;
+  dir: string;
+  prompt: string;
+  model: string | null;
+  agent: string | null;
+  timeout_sec: number;
+  enabled: boolean;
+  catch_up: boolean;
+  env: Record<string, string>;
+  direnv: boolean;
+}
+
+export type TaskPatch = Partial<TaskInput & { last_fire_at: string | null }>;
+
+function toSql(value: TaskPatch[keyof TaskPatch]): SQLInputValue {
+  if (typeof value === 'boolean') return value ? 1 : 0;
+  if (value !== null && typeof value === 'object') return JSON.stringify(value);
+  return value ?? null;
+}
 
 export function createTask(t: TaskInput): Task {
   const ts = now();
@@ -130,24 +195,23 @@ export function createTask(t: TaskInput): Task {
       `INSERT INTO tasks (name, cron, dir, prompt, model, agent, timeout_sec, enabled, catch_up, env, direnv, last_fire_at, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(t.name, t.cron, t.dir, t.prompt, t.model, t.agent, t.timeout_sec, t.enabled, t.catch_up, t.env, t.direnv, ts, ts, ts);
-  return findTask(Number(r.lastInsertRowid))!;
+    .run(t.name, t.cron, t.dir, t.prompt, t.model, t.agent, t.timeout_sec, toSql(t.enabled), toSql(t.catch_up), toSql(t.env), toSql(t.direnv), ts, ts, ts);
+  return getTask(Number(r.lastInsertRowid));
 }
 
-export function updateTask(id: number, patch: Partial<TaskInput & { last_fire_at: string | null }>): Task {
-  const keys = Object.keys(patch).filter((k) => (patch as Record<string, unknown>)[k] !== undefined);
-  if (keys.length) {
-    const values = keys.map((k) => (patch as Record<string, SQLInputValue>)[k]);
+export function updateTask(id: number, patch: TaskPatch): Task {
+  const entries = Object.entries(patch).filter(([, v]) => v !== undefined);
+  if (entries.length > 0) {
     getDb()
-      .prepare(`UPDATE tasks SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
-      .run(...values, now(), id);
+      .prepare(`UPDATE tasks SET ${entries.map(([k]) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
+      .run(...entries.map(([, v]) => toSql(v)), now(), id);
   }
-  return findTask(id)!;
+  return getTask(id);
 }
 
 export function deleteTask(id: number): void {
-  for (const r of getDb().prepare('SELECT id FROM runs WHERE task_id = ?').all(id)) {
-    removeRunFiles(Number((r as { id: number }).id));
+  for (const row of getDb().prepare('SELECT id FROM runs WHERE task_id = ?').all(id)) {
+    removeRunFiles(IdRow.parse(row).id);
   }
   getDb().prepare('DELETE FROM tasks WHERE id = ?').run(id);
 }
@@ -156,7 +220,7 @@ export function setLastFire(id: number, at: string): void {
   getDb().prepare('UPDATE tasks SET last_fire_at = ? WHERE id = ?').run(at, id);
 }
 
-// ---------- runs ----------
+// ---------------------------------------------------------------- runs
 
 export function setRunSession(id: number, sessionId: string): void {
   getDb().prepare('UPDATE runs SET session_id = ? WHERE id = ?').run(sessionId, id);
@@ -168,68 +232,90 @@ export function setRunPrompt(id: number, prompt: string): void {
 
 /** Task owning an opencode session (through the runs that used it). */
 export function taskForSession(sessionId: string): Task | undefined {
-  const r = getDb().prepare('SELECT task_id FROM runs WHERE session_id = ? ORDER BY id DESC LIMIT 1').get(sessionId) as { task_id: number } | undefined;
-  return r ? findTask(r.task_id) : undefined;
+  const row = getDb().prepare('SELECT task_id FROM runs WHERE session_id = ? ORDER BY id DESC LIMIT 1').get(sessionId);
+  return row === undefined ? undefined : findTask(TaskIdRow.parse(row).task_id);
 }
 
-export function createRun(task: Task, trigger: RunTrigger, prompt: string | null = task.prompt): Run {
+export function createRun(task: Task, trigger: RunTrigger, prompt: string | null): Run {
   const r = getDb()
     .prepare(`INSERT INTO runs (task_id, task_name, trigger, status, started_at, pid, prompt) VALUES (?, ?, ?, 'running', ?, ?, ?)`)
     .run(task.id, task.name, trigger, now(), process.pid, prompt);
-  return getRun(Number(r.lastInsertRowid))!;
+  return mustGetRun(Number(r.lastInsertRowid));
 }
 
-export function finishRun(
-  id: number,
-  f: Pick<Run, 'status' | 'exit_code' | 'session_id' | 'error' | 'output' | 'cost' | 'tokens'>,
-): Run {
+export type RunResult = Pick<Run, 'status' | 'exit_code' | 'session_id' | 'error' | 'output' | 'cost' | 'tokens'>;
+
+export function finishRun(id: number, f: RunResult): Run {
   getDb()
     .prepare(
       `UPDATE runs SET status = ?, finished_at = ?, exit_code = ?, session_id = ?, error = ?, output = ?, cost = ?, tokens = ?
        WHERE id = ?`,
     )
     .run(f.status, now(), f.exit_code, f.session_id, f.error, f.output, f.cost, f.tokens, id);
-  return getRun(id)!;
+  return mustGetRun(id);
 }
 
 export function getRun(id: number): Run | undefined {
-  const r = getDb().prepare('SELECT * FROM runs WHERE id = ?').get(id);
-  return r ? ({ ...r } as unknown as Run) : undefined;
+  const row = getDb().prepare('SELECT * FROM runs WHERE id = ?').get(id);
+  return row === undefined ? undefined : toRun(row);
+}
+
+function mustGetRun(id: number): Run {
+  const r = getRun(id);
+  if (r === undefined) throw new Error(`Run #${id} introuvable`);
+  return r;
 }
 
 /** All runs of an opencode session, oldest first. */
 export function sessionRuns(sessionId: string): Run[] {
-  return rows<Run>(getDb().prepare('SELECT * FROM runs WHERE session_id = ? ORDER BY id').all(sessionId));
+  return getDb().prepare('SELECT * FROM runs WHERE session_id = ? ORDER BY id').all(sessionId).map((r) => toRun(r));
 }
 
-export function listRuns(opts: { taskId?: number; failed?: boolean; limit?: number } = {}): Run[] {
+export interface RunFilter {
+  taskId?: number | undefined;
+  failed?: boolean | undefined;
+  limit?: number | undefined;
+}
+
+export function listRuns(opts: RunFilter = {}): Run[] {
   const where: string[] = [];
   const args: SQLInputValue[] = [];
   if (opts.taskId !== undefined) {
     where.push('task_id = ?');
     args.push(opts.taskId);
   }
-  if (opts.failed) where.push(`status NOT IN ('success', 'running')`);
-  const sql = `SELECT * FROM runs ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY id DESC LIMIT ?`;
-  return rows<Run>(getDb().prepare(sql).all(...args, opts.limit ?? 20));
+  if (opts.failed === true) where.push(`status NOT IN ('success', 'running')`);
+  const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+  return getDb()
+    .prepare(`SELECT * FROM runs ${clause} ORDER BY id DESC LIMIT ?`)
+    .all(...args, opts.limit ?? 20)
+    .map((r) => toRun(r));
 }
 
 export function runningRuns(): Run[] {
-  return rows<Run>(getDb().prepare(`SELECT * FROM runs WHERE status = 'running' ORDER BY id`).all());
+  return getDb().prepare(`SELECT * FROM runs WHERE status = 'running' ORDER BY id`).all().map((r) => toRun(r));
 }
 
 export function lastRun(taskId: number): Run | undefined {
-  const r = getDb().prepare('SELECT * FROM runs WHERE task_id = ? ORDER BY id DESC LIMIT 1').get(taskId);
-  return r ? ({ ...r } as unknown as Run) : undefined;
+  const row = getDb().prepare('SELECT * FROM runs WHERE task_id = ? ORDER BY id DESC LIMIT 1').get(taskId);
+  return row === undefined ? undefined : toRun(row);
 }
 
 /** Runs left in 'running' by a process that no longer exists. */
 export function reapStaleRuns(): number {
   let n = 0;
   for (const r of runningRuns()) {
-    if (r.pid && isAlive(r.pid)) continue;
-    finishRun(r.id, { status: 'error', exit_code: null, session_id: r.session_id, error: 'Interrompu (processus disparu)', output: r.output, cost: null, tokens: null });
-    n++;
+    if (r.pid !== null && isAlive(r.pid)) continue;
+    finishRun(r.id, {
+      status: 'error',
+      exit_code: null,
+      session_id: r.session_id,
+      error: 'Interrompu (processus disparu)',
+      output: r.output,
+      cost: null,
+      tokens: null,
+    });
+    n += 1;
   }
   return n;
 }

@@ -261,19 +261,20 @@ class TasksPage {
         save.connect('clicked', async () => {
             const prompt = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), false);
             const args = isNew ? ['add'] : ['edit', String(t.id)];
+            // empty --model= / --agent= clear the value (default model / agent)
             args.push(`--name=${name.text.trim()}`, `--cron=${cron.text.trim()}`, `--dir=${dir}`,
                 `--model=${model.text.trim()}`, `--agent=${agent.text.trim()}`, `--timeout=${timeout.text.trim() || '0'}`,
-                catchUp.active ? (isNew ? '' : '--catch-up') : '--no-catch-up', '--prompt=-');
-            args.push(direnv.active ? '--direnv' : (isNew ? '' : '--no-direnv'));
+                catchUp.active ? '--catch-up' : '--no-catch-up',
+                direnv.active ? '--direnv' : '--no-direnv',
+                '--prompt=-');
             if (!isNew)
                 args.push('--clear-env');
             const envText = envBuffer.get_text(envBuffer.get_start_iter(), envBuffer.get_end_iter(), false);
             for (const line of envText.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#')))
                 args.push(`--env=${line.replace(/^export\s+/, '')}`);
-            if (isNew && !enabled.active)
-                args.push('--disabled');
-            if (!isNew && enabled.active !== t.enabled)
-                args.push(enabled.active ? '--enable' : '--disable');
+            // on edit, only when changed: re-enabling restarts the schedule from now
+            if (isNew || enabled.active !== t.enabled)
+                args.push(enabled.active ? '--enabled' : '--no-enabled');
             save.sensitive = false;
             try {
                 await tg(args.filter(Boolean), {input: prompt});
