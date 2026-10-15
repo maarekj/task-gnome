@@ -1,0 +1,8 @@
+{
+  "uuid": "taskgnome@maarek",
+  "name": "taskgnome",
+  "description": "Planifie des prompts opencode (cron), affiche les tâches, l'historique et les erreurs. Nécessite la CLI taskgnome.",
+  "shell-version": ["48", "49", "50"],
+  "url": "",
+  "version": 1
+}

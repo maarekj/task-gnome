@@ -1,0 +1,39 @@
+.taskgnome-badge {
+  width: 7px;
+  height: 7px;
+  border-radius: 4px;
+  background-color: #e01b24;
+  margin: 2px 0 0 0;
+}
+.taskgnome-badge.auth {
+  background-color: #f6d32d;
+}
+.taskgnome-running {
+  color: #62a0ea;
+}
+.taskgnome-header {
+  font-weight: bold;
+}
+.taskgnome-alert {
+  color: #f6d32d;
+  font-weight: bold;
+}
+.taskgnome-dim {
+  color: rgba(255, 255, 255, 0.55);
+}
+.taskgnome-log-dialog {
+  min-width: 720px;
+}
+.taskgnome-log-title {
+  font-weight: bold;
+  font-size: 1.1em;
+  margin-bottom: 8px;
+}
+.taskgnome-log-scroll {
+  max-height: 480px;
+  min-height: 200px;
+}
+.taskgnome-log-text {
+  font-family: monospace;
+  font-size: 0.9em;
+}
