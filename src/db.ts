@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { z } from 'zod';
 import { DB_PATH, ensureDirs, runLogPaths } from './paths.ts';
+import { RunStatus, RunTrigger } from './shared/api.ts';
 import { errorMessage } from './util.ts';
 
 // ---------------------------------------------------------------- schemas
@@ -43,11 +44,7 @@ const TaskRow = z.object({
 });
 export type Task = z.output<typeof TaskRow>;
 
-export const RUN_STATUSES = ['running', 'success', 'error', 'auth_error', 'timeout', 'cancelled'] as const;
-export const RunStatus = z.enum(RUN_STATUSES);
-export type RunStatus = z.output<typeof RunStatus>;
-export const RunTrigger = z.enum(['schedule', 'catchup', 'manual', 'interactive']);
-export type RunTrigger = z.output<typeof RunTrigger>;
+export { RunStatus, RunTrigger } from './shared/api.ts';
 
 const RunRow = z.object({
   id: z.number().int(),

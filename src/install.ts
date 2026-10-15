@@ -9,7 +9,7 @@ const ROOT = path.resolve(import.meta.dirname, '..');
 export const ENTRY = path.join(ROOT, 'src', 'main.ts');
 
 /** Installs the CLI wrapper, the GNOME Shell extension and the systemd user service. Returns log lines. */
-export function install(): string[] {
+export async function install(): Promise<string[]> {
   const out: string[] = [];
   const pathVar = env('PATH') ?? '';
   const nodeCmd = `${process.execPath} --disable-warning=ExperimentalWarning ${ENTRY}`;
@@ -26,9 +26,12 @@ export function install(): string[] {
   const extDir = path.join(os.homedir(), '.local', 'share', 'gnome-shell', 'extensions');
   fs.mkdirSync(extDir, { recursive: true });
   const extLink = path.join(extDir, EXTENSION_UUID);
+  // the extension is TSX: bundled by esbuild (dev dependency) into extension/dist
+  const { buildExtension } = await import('../scripts/build-extension.ts');
+  const dist = await buildExtension();
   fs.rmSync(extLink, { force: true });
-  fs.symlinkSync(path.join(ROOT, 'extension'), extLink);
-  out.push(`Extension: ${extLink}`);
+  fs.symlinkSync(dist, extLink);
+  out.push(`Extension: ${extLink} -> ${dist}`);
   try {
     execFileSync('gnome-extensions', ['enable', EXTENSION_UUID], { stdio: 'ignore' });
     out.push('Extension activée.');

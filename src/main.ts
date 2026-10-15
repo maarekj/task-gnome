@@ -7,6 +7,12 @@ import { buildContext } from './cli/shared.ts';
 const normalize = (args: readonly string[]): string[] =>
   args.flatMap((a) => (/^--[\w-]+=$/u.test(a) ? [a.slice(0, -1), ''] : [a]));
 
+// output piped into a command that stops reading (e.g. `| head`): exit quietly, like other Unix tools
+process.stdout.on('error', (error: NodeJS.ErrnoException) => {
+  if (error.code === 'EPIPE') process.exit(0);
+  throw error;
+});
+
 const args = normalize(process.argv.slice(2));
 const inputs = args.length === 0 && process.stdin.isTTY && process.stdout.isTTY ? ['interactive'] : args;
 await run(app, inputs, buildContext(process));

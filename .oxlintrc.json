@@ -23,7 +23,8 @@
   },
   "ignorePatterns": [
     "node_modules",
-    "extension/**"
+    "extension/dist/**",
+    "extension/types/**"
   ],
   "rules": {
     "typescript/no-explicit-any": "error",
@@ -52,6 +53,29 @@
       ],
       "rules": {
         "no-await-in-loop": "off"
+      }
+    },
+    {
+      "files": [
+        "extension/src/**"
+      ],
+      "rules": {
+        "no-underscore-dangle": [
+          "error",
+          {
+            "allow": [
+              "_promisify"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "extension/src/env.d.ts"
+      ],
+      "rules": {
+        "import/no-unassigned-import": "off"
       }
     }
   ]

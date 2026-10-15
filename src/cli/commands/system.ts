@@ -2,6 +2,7 @@ import { buildCommand } from '@stricli/core';
 import { listRuns, listTasks } from '../../db.ts';
 import { install } from '../../install.ts';
 import { daemon, type PingResponse } from '../../ipc.ts';
+import type { Overview } from '../../shared/api.ts';
 import { DATA_DIR, SOCKET_PATH } from '../../paths.ts';
 import { fmtDate } from '../../util.ts';
 import { listRunViews, runView, taskView } from '../ops.ts';
@@ -58,7 +59,7 @@ export const overviewCommand = buildCommand({
         daemon: pong === null ? null : { pid: pong.pid },
         tasks: listTasks().map((t) => taskView(t)),
         runs: listRunViews({ limit: flags.limit }),
-      });
+      } satisfies Overview);
     });
   },
 });
@@ -79,8 +80,8 @@ export const installCommand = buildCommand({
   docs: { brief: 'Installe la CLI (~/.local/bin), l\'extension GNOME et le service systemd --user' },
   parameters: {},
   async func(this: Context) {
-    await guard(this, { json: false }, () => {
-      for (const line of install()) print(this, line);
+    await guard(this, { json: false }, async () => {
+      for (const line of await install()) print(this, line);
     });
   },
 });

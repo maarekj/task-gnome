@@ -3,12 +3,9 @@ import { z } from 'zod';
 import { errorText, LogLine, type Part } from './opencode.ts';
 import { assertNever } from './util.ts';
 
-export type Entry =
-  | { kind: 'prompt'; text: string }
-  | { kind: 'text'; text: string }
-  | { kind: 'reasoning'; text: string }
-  | { kind: 'tool'; id: string; tool: string; title: string; status: string; input: string; output: string }
-  | { kind: 'error'; text: string };
+import type { Entry } from './shared/api.ts';
+
+export type { Entry };
 
 type ToolEntry = Extract<Entry, { kind: 'tool' }>;
 

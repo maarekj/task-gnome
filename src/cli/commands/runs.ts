@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { buildCommand } from '@stricli/core';
 import { type Task } from '../../db.ts';
+import type { RunLogs } from '../../shared/api.ts';
 import { openRun } from '../../open.ts';
 import { runLogPaths } from '../../paths.ts';
 import { openTerminal } from '../../terminal.ts';
@@ -144,12 +145,8 @@ export const logsCommand = buildCommand({
         return;
       }
       if (flags.json) {
-        printJson(this, {
-          ...runView(r),
-          output: r.output,
-          logs: paths,
-          ...(flags.transcript ? { transcript: transcriptOf(r), session_runs: sessionOf(r) } : {}),
-        });
+        const base = { ...runView(r), output: r.output, logs: paths };
+        printJson(this, flags.transcript ? ({ ...base, transcript: transcriptOf(r), session_runs: sessionOf(r) } satisfies RunLogs) : base);
         return;
       }
       print(this, describeRun(r.id));

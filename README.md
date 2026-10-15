@@ -45,7 +45,10 @@ pnpm check        # tsc (configuration la plus stricte) + oxlint --type-aware
 
 - TypeScript exécuté directement par Node (type stripping) : pas de build.
 - Toutes les données externes (événements du serveur opencode, réponses du démon, lignes SQLite, journaux) sont validées avec zod.
-- Règles oxlint désactivées volontairement (`.oxlintrc.json`) : `prefer-readonly-parameter-types` (inapplicable avec les types Node), `no-inline-comments` et les métriques de taille (style), `no-redeclare` (l'idiome zod `const X` + `type X`, déjà vérifié par TypeScript), `prefer-top-level-await` (faux positifs sur `.catch()` de zod), `no-await-in-loop` dans le mode interactif (menus séquentiels par nature).
-- L'extension (`extension/`) est en JavaScript GJS, pas encore vérifiée (voir #4).
+- Règles oxlint désactivées volontairement (`.oxlintrc.json`) : `no-underscore-dangle` pour `_promisify` (API GJS), les imports sans nom de `extension/src/env.d.ts` (types globaux GJS), `no-deprecated` sur `Adw.PreferencesWindow` (imposée par GNOME Shell), et `prefer-readonly-parameter-types` (inapplicable avec les types Node), `no-inline-comments` et les métriques de taille (style), `no-redeclare` (l'idiome zod `const X` + `type X`, déjà vérifié par TypeScript), `prefer-top-level-await` (faux positifs sur `.catch()` de zod), `no-await-in-loop` dans le mode interactif (menus séquentiels par nature).
+- L'extension (`extension/src`) est en TSX avec [gnim](https://aylur.github.io/gnim/) (JSX et réactivité pour GJS — attention, ce n'est pas React : un composant s'exécute une fois, seules les valeurs liées se mettent à jour). Trois contextes TypeScript : `shell` (GNOME Shell, `gnim/gnome`), `prefs` (Gtk 4 / Adwaita, `gnim/gtk4`) et `common`.
+- `pnpm build:extension` produit `extension/dist` (esbuild) ; `taskgnome install` le fait aussi et y fait pointer GNOME Shell.
+- gnim est publié en sources TypeScript qui ne passent pas la vérification avec les types `@girs` actuels : `scripts/gnim-types.ts` génère ses déclarations (`extension/types`, lancé par `pnpm typecheck`) et l'extension est vérifiée contre elles. Toutes les dépendances `@girs` sont alignées sur une seule version (`overrides` dans `pnpm-workspace.yaml`).
+- Le format JSON échangé entre la CLI et l'extension est défini une seule fois dans `src/shared/api.ts` (zod/mini) : vérifié à la compilation côté CLI, validé à l'exécution côté extension.
 
 Le suivi du développement se fait dans les [issues](https://github.com/maarekj/task-gnome/issues).

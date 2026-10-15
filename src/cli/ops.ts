@@ -10,15 +10,14 @@ import { daemon } from '../ipc.ts';
 import { runLogPaths } from '../paths.ts';
 import { Runner } from '../runner.ts';
 import { shq } from '../terminal.ts';
-import { readTranscript, type Entry } from '../transcript.ts';
+import type { Entry, RunView, SessionRunView, TaskView } from '../shared/api.ts';
+import { readTranscript } from '../transcript.ts';
 import { nextRun } from '../util.ts';
 
 /** Error caused by user input: printed without stack trace, exit code 2. */
 export class UsageError extends Error {}
 
-export const STATUS_ICON: Readonly<Record<Run['status'], string>> = {
-  running: '⏳', success: '✓', error: '✗', auth_error: '🔑', timeout: '⌛', cancelled: '⏹',
-};
+export { STATUS_ICON } from '../shared/api.ts';
 
 export const DEFAULT_TIMEOUT_SEC = 30 * 60;
 
@@ -70,14 +69,12 @@ export function applyEnv(base: Readonly<Record<string, string>>, assignments: re
 
 // ---------------------------------------------------------------- views (JSON output, read by the GNOME extension)
 
-export type RunView = Omit<Run, 'output'> & { duration_ms: number | null };
+export type { RunView, TaskView };
 
 export function runView(r: Run): RunView {
   const { output: _output, ...rest } = r;
   return { ...rest, duration_ms: r.finished_at === null ? null : Date.parse(r.finished_at) - Date.parse(r.started_at) };
 }
-
-export type TaskView = Task & { next_run: string | null; last_run: RunView | null };
 
 export function taskView(t: Task): TaskView {
   const last = lastRun(t.id);
@@ -94,8 +91,6 @@ export function listRunViews(filter: RunFilter): RunView[] {
 
 // ---------------------------------------------------------------- logs
 
-export type SessionRunView = RunView & { transcript: Entry[] };
-
 export function transcriptOf(r: Run): Entry[] {
   const prompt = r.prompt ?? (r.trigger === 'interactive' ? null : (findTask(r.task_id)?.prompt ?? null));
   return readTranscript(runLogPaths(r.id).stdout, prompt);
@@ -104,7 +99,7 @@ export function transcriptOf(r: Run): Entry[] {
 /** The whole conversation: every run sharing the run's opencode session. */
 export function sessionOf(r: Run): SessionRunView[] {
   const runs = r.session_id === null ? [r] : sessionRuns(r.session_id);
-  return runs.map((x) => Object.assign(runView(x), { transcript: transcriptOf(x) }));
+  return runs.map((x): SessionRunView => Object.assign(runView(x), { transcript: transcriptOf(x) }));
 }
 
 // ---------------------------------------------------------------- actions

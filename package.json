@@ -2,9 +2,10 @@
   "name": "taskgnome",
   "description": "Planifie des prompts opencode depuis GNOME",
   "scripts": {
-    "typecheck": "tsc",
+    "typecheck": "node scripts/gnim-types.ts && tsc && tsc -p extension/src/common && tsc -p extension/src/shell && tsc -p extension/src/prefs",
     "lint": "oxlint --type-aware",
-    "check": "tsc && oxlint --type-aware",
+    "check": "pnpm typecheck && pnpm lint",
+    "build:extension": "node scripts/build-extension.ts",
     "start": "bin/taskgnome daemon"
   },
   "type": "module",
@@ -13,10 +14,16 @@
     "@stricli/core": "^1.3.0",
     "croner": "^10.0.1",
     "dbus-next": "^0.10.2",
+    "gnim": "^1.9.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@girs/adw-1": "^5.5.0",
+    "@girs/gjs": "^5.5.0",
+    "@girs/gnome-shell": "^50.0.4",
+    "@girs/gtk-4.0": "^5.5.0",
     "@types/node": "^26.6.5",
+    "esbuild": "^0.28.2",
     "oxlint": "^1.88.0",
     "oxlint-tsgolint": "^7.0.2004",
     "typescript": "^7.0.2"

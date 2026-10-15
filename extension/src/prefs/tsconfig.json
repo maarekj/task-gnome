@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "jsxImportSource": "gnim/gtk4" },
+  "include": ["./**/*", "../common/**/*", "../env.d.ts", "../../../src/shared/**/*"]
+}

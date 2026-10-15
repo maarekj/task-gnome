@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "jsxImportSource": "gnim/gnome" },
+  "include": ["./**/*", "../common/**/*", "../env.d.ts", "../../../src/shared/**/*"]
+}

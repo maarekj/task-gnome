@@ -7,3 +7,5 @@ devenv.local.nix
 .env
 .env.*
 .idea/
+extension/dist/
+extension/types/
