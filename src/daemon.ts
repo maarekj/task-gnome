@@ -6,11 +6,10 @@ import { enableActions } from './notify.ts';
 import { openRun } from './open.ts';
 import { SOCKET_PATH } from './paths.ts';
 import { Runner, type StartedRun } from './runner.ts';
-import { assertNever, errorMessage, nextRun, sleep } from './util.ts';
+import { decide } from './schedule.ts';
+import { assertNever, errorMessage, sleep } from './util.ts';
 
 const TICK_MS = 15_000;
-/** A schedule missed by more than this is considered a "catch-up" (e.g. after suspend / boot). */
-const LATE_MS = 2 * 60_000;
 
 const log = (...a: unknown[]): void => {
   console.log(new Date().toISOString(), ...a);
@@ -24,25 +23,19 @@ function launch(runner: Runner, task: Task, trigger: 'schedule' | 'catchup' | 'm
   return runner.start(task, trigger);
 }
 
-/**
- * Stateless scheduler: each tick, compares the next occurrence after `last_fire_at`
- * with now. Robust to suspend/resume, reboots and edits done by the CLI (re-read every tick).
- */
+/** Each tick: runs the tasks that are due (see schedule.ts). Tasks are re-read every tick (CLI edits). */
 function tick(runner: Runner): void {
   const now = Date.now();
   for (const t of listTasks()) {
-    if (!t.enabled) continue;
-    const due = nextRun(t.cron, new Date(t.last_fire_at ?? t.created_at));
-    if (due === null || due.getTime() > now) continue;
-
-    const late = now - due.getTime() > LATE_MS;
-    setLastFire(t.id, new Date(now).toISOString()); // collapses multiple missed slots into one
-    if (late && !t.catch_up) {
+    const d = decide(t, now);
+    if (d.action === 'wait') continue;
+    setLastFire(t.id, new Date(now).toISOString());
+    if (d.action === 'skip') {
       log(`skip missed slot task=${t.name} (catch_up off)`);
       continue;
     }
     try {
-      launch(runner, t, late ? 'catchup' : 'schedule');
+      launch(runner, t, d.trigger);
     } catch (error) {
       log(errorMessage(error));
     }

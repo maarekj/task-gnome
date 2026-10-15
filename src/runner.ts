@@ -23,7 +23,7 @@ const AUTH_PATTERNS = [
   /unauthori[sz]ed/iu,
   /authentication[_ ]?(?:error|failed)/iu,
   /ProviderAuthError/u,
-  /invalid[_ ](?:x-)?api[_ ]key/iu,
+  /invalid[_ ](?:x-)?api[_ -]key/iu,
   /(?:token|credentials?|oauth).{0,40}(?:expired|invalid|revoked)/iu,
   /(?:expired|invalid|revoked).{0,40}(?:token|credentials?|oauth)/iu,
   /refresh[_ ]?token/iu,
@@ -56,7 +56,8 @@ interface Active {
   task: Task;
   sessionId: string | null;
   srv: OcServer | null;
-  out: fs.WriteStream;
+  /** run log (JSON lines), written synchronously: readers always see complete events */
+  logFile: string;
   texts: string[];
   errors: string[];
   stderr: string[];
@@ -202,7 +203,7 @@ export class Runner {
     const what = { interactive: 'Nouveau message dans la session', catchup: 'Démarrée (rattrapage)', schedule: 'Démarrée', manual: 'Démarrée' }[trigger];
     const a: Active = {
       run, task, sessionId, srv: null,
-      out: fs.createWriteStream(runLogPaths(run.id).stdout),
+      logFile: runLogPaths(run.id).stdout,
       texts: [], errors: [], stderr: [], auth: false, cost: 0, tokens: 0,
       startedAt: Date.now(),
       notif: notify(`▶ ${task.name}`, `${what} — ${task.dir}`, { icon: 'media-playback-start-symbolic', runId: run.id }),
@@ -240,7 +241,7 @@ export class Runner {
   }
 
   private write(a: Active, ev: object): void {
-    a.out.write(`${JSON.stringify(ev)}\n`);
+    fs.appendFileSync(a.logFile, `${JSON.stringify(ev)}\n`);
   }
 
   private sessionOf(ev: ServerEvent): string | undefined {
@@ -357,7 +358,6 @@ export class Runner {
   private finish(a: Active): void {
     if (!this.active.delete(a.run.id)) return;
     clearTimeout(a.timer);
-    a.out.end();
 
     // opencode often reports a generic error: the real cause is in the server logs
     const real = new Set(a.stderr.flatMap((l) => [...l.matchAll(/\berror="((?:[^"\\]|\\.)*)"/gu)].map((m) => m[1] ?? '')));

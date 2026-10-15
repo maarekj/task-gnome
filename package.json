@@ -4,9 +4,10 @@
   "scripts": {
     "typecheck": "node scripts/gnim-types.ts && tsc && tsc -p extension/src/common && tsc -p extension/src/shell && tsc -p extension/src/prefs",
     "lint": "oxlint --type-aware",
-    "check": "pnpm typecheck && pnpm lint",
+    "check": "pnpm typecheck && pnpm lint && pnpm test",
     "build:extension": "node scripts/build-extension.ts",
-    "start": "bin/taskgnome daemon"
+    "start": "bin/taskgnome daemon",
+    "test": "node --disable-warning=ExperimentalWarning --test 'test/*.test.ts'"
   },
   "type": "module",
   "dependencies": {

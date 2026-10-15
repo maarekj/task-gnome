@@ -40,9 +40,11 @@ Données : `~/.local/share/taskgnome` (base SQLite, journaux des runs). Logs du 
 Environnement : [devenv](https://devenv.sh) (`direnv allow`, ou `devenv shell`) — Node 24 et pnpm.
 
 ```sh
-pnpm check        # tsc (configuration la plus stricte) + oxlint --type-aware
+pnpm check        # tsc (configuration la plus stricte) + oxlint --type-aware + tests
+pnpm test         # tests seuls (node:test)
 ```
 
+- Tests (`test/`, `node:test`) : unitaires (planificateur, classement des erreurs, Markdown, journaux), intégration du runner contre un faux `opencode serve` (`test/fake-opencode`), et la CLI lancée réellement avec ses sorties `--json` validées contre le contrat de l'extension. Lancés par la CI GitHub à chaque push.
 - TypeScript exécuté directement par Node (type stripping) : pas de build.
 - Toutes les données externes (événements du serveur opencode, réponses du démon, lignes SQLite, journaux) sont validées avec zod.
 - Règles oxlint désactivées volontairement (`.oxlintrc.json`) : `no-underscore-dangle` pour `_promisify` (API GJS), les imports sans nom de `extension/src/env.d.ts` (types globaux GJS), `no-deprecated` sur `Adw.PreferencesWindow` (imposée par GNOME Shell), et `prefer-readonly-parameter-types` (inapplicable avec les types Node), `no-inline-comments` et les métriques de taille (style), `no-redeclare` (l'idiome zod `const X` + `type X`, déjà vérifié par TypeScript), `prefer-top-level-await` (faux positifs sur `.catch()` de zod), `no-await-in-loop` dans le mode interactif (menus séquentiels par nature).

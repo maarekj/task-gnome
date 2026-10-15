@@ -1,0 +1,85 @@
+#!/usr/bin/env node
+// Fake `opencode serve` for the integration tests: same HTTP API / SSE events shapes as opencode 1.18.
+// Behaviour depends on the prompt text: "auth" -> ProviderAuthError, "slow" -> stays busy until aborted.
+import http from 'node:http';
+
+const args = process.argv.slice(2);
+if (args[0] !== 'serve') process.exit(2);
+const port = Number(args[args.indexOf('--port') + 1]);
+const auth = `Basic ${Buffer.from(`opencode:${process.env.OPENCODE_SERVER_PASSWORD}`).toString('base64')}`;
+
+const clients = new Set();
+const sessions = new Set();
+let seq = 0;
+const id = (p) => `${p}_${++seq}`;
+const emit = (type, properties) => {
+  for (const res of clients) res.write(`data: ${JSON.stringify({ type, properties })}\n\n`);
+};
+const later = (ms, f) => setTimeout(f, ms);
+
+function answer(sid, text) {
+  const user = id('msg');
+  const assistant = id('msg');
+  emit('session.status', { sessionID: sid, status: { type: 'busy' } });
+  emit('message.updated', { info: { id: user, role: 'user', sessionID: sid } });
+  emit('message.part.updated', { part: { type: 'text', text, messageID: user, sessionID: sid } });
+  emit('message.updated', { info: { id: assistant, role: 'assistant', sessionID: sid } });
+  if (text.includes('slow')) return; // until /abort
+  if (text.includes('auth')) {
+    later(20, () => {
+      emit('session.error', { sessionID: sid, error: { name: 'ProviderAuthError', data: { message: 'token expired' } } });
+      emit('session.status', { sessionID: sid, status: { type: 'idle' } });
+    });
+    return;
+  }
+  later(20, () => {
+    const call = id('call');
+    emit('message.part.updated', { part: { type: 'tool', tool: 'bash', callID: call, messageID: assistant, sessionID: sid, state: { status: 'completed', input: { command: 'echo hi' }, output: 'hi', title: 'echo hi' } } });
+    emit('message.part.updated', { part: { type: 'text', text: `réponse à: ${text}`, messageID: assistant, sessionID: sid, time: { start: 1, end: 2 } } });
+    emit('message.part.updated', { part: { type: 'step-finish', messageID: assistant, sessionID: sid, cost: 0.01, tokens: { total: 100 } } });
+    emit('session.status', { sessionID: sid, status: { type: 'idle' } });
+  });
+}
+
+const body = async (req) => {
+  let s = '';
+  for await (const c of req) s += c;
+  return s === '' ? {} : JSON.parse(s);
+};
+
+http
+  .createServer(async (req, res) => {
+    if (req.headers.authorization !== auth) return res.writeHead(401).end();
+    const url = new URL(req.url, 'http://x');
+    const p = url.pathname;
+    if (p === '/global/health') return res.end(JSON.stringify({ healthy: true, version: 'fake' }));
+    if (p === '/event') {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ type: 'server.connected', properties: {} })}\n\n`);
+      clients.add(res);
+      req.on('close', () => clients.delete(res));
+      return undefined;
+    }
+    if (req.method === 'POST' && p === '/session') {
+      const sid = id('ses');
+      sessions.add(sid);
+      return res.end(JSON.stringify({ id: sid }));
+    }
+    const m = /^\/session\/([^/]+)(\/.*)?$/u.exec(p);
+    if (m && sessions.has(m[1])) {
+      const [, sid, action] = m;
+      if (action === undefined) return res.end(JSON.stringify({ id: sid }));
+      if (action === '/prompt_async') {
+        const b = await body(req);
+        res.writeHead(204).end();
+        return answer(sid, b.parts?.[0]?.text ?? '');
+      }
+      if (action === '/abort') {
+        emit('session.error', { sessionID: sid, error: { name: 'MessageAbortedError' } });
+        emit('session.status', { sessionID: sid, status: { type: 'idle' } });
+        return res.end('true');
+      }
+    }
+    return res.writeHead(404).end();
+  })
+  .listen(port, '127.0.0.1', () => console.log(`opencode server listening on http://127.0.0.1:${port}`));
