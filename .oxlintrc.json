@@ -44,7 +44,13 @@
     "max-depth": "off",
     "import/max-dependencies": "off",
     "no-redeclare": "off",
-    "unicorn/prefer-top-level-await": "off"
+    "unicorn/prefer-top-level-await": "off",
+    "typescript/no-confusing-void-expression": [
+      "error",
+      {
+        "ignoreArrowShorthand": true
+      }
+    ]
   },
   "overrides": [
     {

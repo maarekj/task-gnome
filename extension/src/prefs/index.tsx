@@ -26,13 +26,13 @@ export default class TaskGnomePrefs extends ExtensionPreferences {
     };
 
     createRoot((dispose) => {
-      const history = HistoryPage({ toast, openRun });
+      let history: Adw.PreferencesPage | null = null;
 
       // "open on a run" requests (notification click, panel menu, `taskgnome open <run>`)
       const consume = (): void => {
         const run = takeOpenRequest();
         if (run === null) return;
-        window.visiblePage = history;
+        if (history !== null) window.visiblePage = history;
         openRun(run);
         window.present();
       };
@@ -51,7 +51,13 @@ export default class TaskGnomePrefs extends ExtensionPreferences {
           }}
         >
           <TasksPage toast={toast} openRun={openRun} />
-          {history}
+          <HistoryPage
+            toast={toast}
+            openRun={openRun}
+            $={(self: Adw.PreferencesPage) => {
+              history = self;
+            }}
+          />
         </This>
       );
       consume();
