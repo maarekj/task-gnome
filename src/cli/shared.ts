@@ -9,10 +9,10 @@ export interface Context extends CommandContext {
 }
 
 /** Adapter: Node's `process.exitCode` may be undefined, Stricli's may not. */
-export const buildContext = (proc: NodeJS.Process): Context & { readonly process: StricliProcess } => ({
+export const buildContext = (proc: NodeJS.Process, stderr: StricliProcess['stderr'] = proc.stderr): Context & { readonly process: StricliProcess } => ({
   process: {
     stdout: proc.stdout,
-    stderr: proc.stderr,
+    stderr,
     env: proc.env,
     get exitCode(): number | string | null {
       return proc.exitCode ?? null;

@@ -4,6 +4,7 @@ import { cancelCommand, historyCommand, logsCommand, openCommand, resumeCommand,
 import { daemonCommand, installCommand, overviewCommand, statusCommand } from './commands/system.ts';
 import { addCommand, disableCommand, editCommand, enableCommand, listCommand, rmCommand, showCommand } from './commands/tasks.ts';
 import type { Context } from './shared.ts';
+import { buildText } from './text.ts';
 
 const interactiveCommand = buildCommand({
   docs: { brief: 'Mode interactif (menus) — aussi lancé par `taskgnome` sans argument' },
@@ -45,11 +46,13 @@ const routes = buildRouteMap({
   },
 });
 
-export const app = buildApplication(
+/** `json`: Stricli's own errors (unknown command, invalid argument…) are printed as JSON. */
+export const buildApp = (json: boolean): ReturnType<typeof buildApplication<Context>> => buildApplication(
   routes,
   {
     name: 'taskgnome',
     scanner: { caseStyle: 'allow-kebab-for-camel' },
+    localization: { text: buildText(json) },
     determineExitCode: () => 1,
   },
   {
