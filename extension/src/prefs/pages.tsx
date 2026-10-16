@@ -4,7 +4,7 @@ import GLib from 'gi://GLib';
 import Gtk from 'gi://Gtk';
 import { createState, For, With, type FCProps } from 'gnim';
 import type * as z from 'zod/mini';
-import { Ack, FAILED_STATUSES, History, Launched, Overview, STATUS_ICON, TaskView, type RunView } from '../../../src/shared/api.ts';
+import { Ack, FAILED_STATUSES, History, Launched, Overview, STATUS_ICON, TaskView, TerminalInfo, type RunView } from '../../../src/shared/api.ts';
 import { errorMessage, tg } from '../common/cli.ts';
 import { fmtDate, fmtDuration } from '../common/format.ts';
 import { openTaskEditor } from './TaskEditor.tsx';
@@ -115,7 +115,70 @@ export function TasksPage({ toast }: PageProps): JSX.Element {
         </With>
         <For each={data((d) => d?.tasks ?? [])}>{(t: TaskView) => <TaskRow task={t} act={act} edit={edit} confirmDelete={confirmDelete} />}</For>
       </Adw.PreferencesGroup>
+      <SettingsGroup toast={toast} />
     </Adw.PreferencesPage>
+  );
+}
+
+// ---------------------------------------------------------------- settings
+
+const AUTO = 'Automatique';
+
+/** Terminal used by "Continuer": "Automatique" + installed terminals (+ the configured one if not installed). */
+function TerminalRow({ toast }: { toast: (message: string) => void }): JSX.Element {
+  const [info, setInfo] = createState<TerminalInfo | null>(null);
+  let row: Adw.ComboRow | null = null;
+  let choices: string[] = [];
+  let loading = true;
+
+  const load = async (): Promise<void> => {
+    try {
+      const i = await tg(['terminal'], TerminalInfo);
+      choices = [AUTO, ...new Set([...i.installed, ...(i.configured === null ? [] : [i.configured])])];
+      loading = true;
+      if (row !== null) {
+        row.model = Gtk.StringList.new(choices);
+        row.selected = i.configured === null ? 0 : choices.indexOf(i.configured);
+      }
+      loading = false;
+      setInfo(i);
+    } catch (e) {
+      toast(errorMessage(e));
+    }
+  };
+
+  const choose = async (index: number): Promise<void> => {
+    const name = choices[index];
+    if (loading || name === undefined) return;
+    try {
+      const i = await tg(['terminal', ...(name === AUTO ? ['--auto'] : ['--set', name])], TerminalInfo);
+      setInfo(i);
+      toast(`Terminal : ${i.current ?? 'aucun'}`);
+    } catch (e) {
+      toast(errorMessage(e));
+    }
+  };
+
+  void load();
+  return (
+    <Adw.ComboRow
+      title="Terminal pour « Continuer »"
+      subtitle={info((i) =>
+        i === null ? '' : esc(i.source === 'env' ? `Imposé par TASKGNOME_TERMINAL (${i.current ?? ''})` : `Utilisé : ${i.current ?? 'aucun terminal trouvé'}`),
+      )}
+      $={(self) => {
+        row = self;
+      }}
+      onNotifySelected={(self) => void choose(self.selected)}
+    />
+  );
+}
+
+export function SettingsGroup({ toast }: Pick<PageProps, 'toast'>): JSX.Element {
+  return (
+    <Adw.PreferencesGroup title="Réglages">
+      <TerminalRow toast={toast} />
+    </Adw.PreferencesGroup>
   );
 }
 

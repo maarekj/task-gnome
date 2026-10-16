@@ -33,6 +33,8 @@ taskgnome list | history [--failed] | logs <run> | run <task> | resume <run> | s
 taskgnome --help                # et `taskgnome <commande> --help`
 ```
 
+Terminal utilisé par « Continuer » : `taskgnome terminal [--set <nom> | --auto]` ou les préférences (Réglages) ; enregistré dans `~/.config/taskgnome/config.json`.
+
 Données : `~/.local/share/taskgnome` (base SQLite, journaux des runs). Logs du démon : `journalctl --user -u taskgnome -f`.
 
 ## Développement

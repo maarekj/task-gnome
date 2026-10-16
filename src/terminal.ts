@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { readConfig } from './config.ts';
 import { env } from './env.ts';
 
 /** Shell-quotes a string when needed. */
@@ -24,13 +25,31 @@ function inPath(bin: string): boolean {
   return (env('PATH') ?? '').split(':').some((d) => d !== '' && fs.existsSync(path.join(d, bin)));
 }
 
+/** Known terminals, in automatic-choice order. */
+export const KNOWN_TERMINALS: readonly string[] = Object.keys(TERMINALS);
+
+/** Known terminals installed on this machine. */
+export function installedTerminals(): string[] {
+  return KNOWN_TERMINALS.filter((t) => inPath(t));
+}
+
+/** Terminal that "Continuer" will use and where the choice comes from. */
+export function resolveTerminal(wanted?: string): { name: string | undefined; source: 'option' | 'env' | 'config' | 'auto' } {
+  if (wanted !== undefined) return { name: wanted, source: 'option' };
+  const fromEnv = env('TASKGNOME_TERMINAL');
+  if (fromEnv !== undefined) return { name: fromEnv, source: 'env' };
+  const fromConfig = readConfig().terminal;
+  if (fromConfig !== undefined) return { name: fromConfig, source: 'config' };
+  return { name: installedTerminals()[0], source: 'auto' };
+}
+
 /**
  * Opens a terminal running `command` in an interactive shell, then leaves the shell open.
- * Terminal: `wanted`, else $TASKGNOME_TERMINAL, else the first one found.
+ * Terminal: `wanted`, else $TASKGNOME_TERMINAL, else the configured one, else the first one found.
  */
 export function openTerminal(command: string, wanted?: string): string {
-  const name = wanted ?? env('TASKGNOME_TERMINAL') ?? Object.keys(TERMINALS).find((t) => inPath(t));
-  if (name === undefined) throw new Error('Aucun terminal trouvé (option --terminal ou variable TASKGNOME_TERMINAL)');
+  const { name } = resolveTerminal(wanted);
+  if (name === undefined) throw new Error('Aucun terminal trouvé : choisis-en un (taskgnome terminal --set <nom>)');
   const [bin = name, ...prefix] = TERMINALS[name] ?? [name, '-e'];
   const shell = env('SHELL') ?? '/bin/sh';
   const child = spawn(bin, [...prefix, shell, '-ic', `${command}; exec ${shq(shell)} -i`], { detached: true, stdio: 'ignore' });

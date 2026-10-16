@@ -6,11 +6,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
 import type * as z from 'zod/mini';
-import { Failure, History, Overview, RunLogs, TaskView } from '../src/shared/api.ts';
+import { Failure, History, Overview, RunLogs, TaskView, TerminalInfo } from '../src/shared/api.ts';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'taskgnome-cli-'));
 const main = path.join(import.meta.dirname, '..', 'src', 'main.ts');
-const env = { ...process.env, TASKGNOME_DATA_DIR: dataDir, TASKGNOME_SOCKET: path.join(dataDir, 'none.sock'), TASKGNOME_NO_NOTIFY: '1' };
+const env = { ...process.env, TASKGNOME_TERMINAL: '', TASKGNOME_CONFIG: path.join(dataDir, 'config.json'), TASKGNOME_DATA_DIR: dataDir, TASKGNOME_SOCKET: path.join(dataDir, 'none.sock'), TASKGNOME_NO_NOTIFY: '1' };
 
 function cli(args: string[], input?: string): { code: number; out: string; err: string } {
   const r = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', main, ...args], { env, input, encoding: 'utf8' });
@@ -65,6 +65,14 @@ describe('CLI --json (contrat avec l\'extension)', () => {
       const f = Failure.parse(JSON.parse(r.out));
       assert.notEqual(f.error, '');
     }
+  });
+
+  it('réglage du terminal : réglé, puis retour à l\'automatique', () => {
+    const set = json(TerminalInfo, ['terminal', '--set', 'mon-terminal']);
+    assert.deepEqual([set.current, set.source, set.configured], ['mon-terminal', 'config', 'mon-terminal']);
+    const auto = json(TerminalInfo, ['terminal', '--auto']);
+    assert.equal(auto.configured, null);
+    assert.equal(auto.source, 'auto');
   });
 
   it('erreurs en français sans --json', () => {

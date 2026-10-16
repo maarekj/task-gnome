@@ -123,3 +123,15 @@ export const OpenRequest = z.object({ run: z.int(), ts: z.number() });
 export type OpenRequest = z.output<typeof OpenRequest>;
 export const OPEN_REQUEST_FILE = 'open-request.json';
 export const OPEN_REQUEST_MAX_AGE_MS = 60_000;
+
+/** `taskgnome terminal --json` */
+export const TerminalInfo = z.object({
+  /** terminal used by "Continuer" (null: none found) */
+  current: z.nullable(z.string()),
+  source: z.enum(['option', 'env', 'config', 'auto']),
+  /** configured value (null: automatic) */
+  configured: z.nullable(z.string()),
+  installed: z.array(z.string()),
+  known: z.array(z.string()),
+});
+export type TerminalInfo = z.output<typeof TerminalInfo>;

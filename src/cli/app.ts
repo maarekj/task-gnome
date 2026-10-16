@@ -1,6 +1,7 @@
 import { buildApplication, buildCommand, buildRouteMap, help, version } from '@stricli/core';
 import pkg from '../../package.json' with { type: 'json' };
 import { cancelCommand, historyCommand, logsCommand, openCommand, resumeCommand, runCommand } from './commands/runs.ts';
+import { terminalCommand } from './commands/terminal.ts';
 import { daemonCommand, installCommand, overviewCommand, statusCommand } from './commands/system.ts';
 import { addCommand, disableCommand, editCommand, enableCommand, listCommand, rmCommand, showCommand } from './commands/tasks.ts';
 import type { Context } from './shared.ts';
@@ -29,6 +30,7 @@ const routes = buildRouteMap({
     history: historyCommand,
     logs: logsCommand,
     resume: resumeCommand,
+    terminal: terminalCommand,
     open: openCommand,
     status: statusCommand,
     overview: overviewCommand,
